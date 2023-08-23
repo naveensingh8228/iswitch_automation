@@ -1,0 +1,1366 @@
+import struct
+import urllib.parse 
+import schedule
+import time
+import serial
+import socket
+import urllib.request
+from urllib.error import URLError , HTTPError
+import socket
+from threading import Thread
+import mysql.connector
+import netifaces as ni
+import datetime
+from datetime import datetime
+import requests
+from collections import defaultdict
+import csv
+import threading
+import json
+import itertools
+import ast
+import requests
+import os
+from algorithm import iswitchFeature as feature
+from configaration_file import Flatconfigaration
+import networkx as nx
+import math
+import RPi.GPIO as GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup(18,GPIO.OUT)
+GPIO.setup(23,GPIO.OUT)
+
+
+# ser = serial.Serial(port='/dev/ttyUSB0', baudrate=9600,
+# parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE, timeout=10)
+ser = serial.Serial(port='/dev/ttyS0', baudrate=9600,
+                    parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE, timeout=10)
+os.system("sudo /etc/init.d/mysql restart")
+global project
+project = 'RF_mesh'
+MainSwitchBordNo = 2
+d = {}
+e = {}
+total_number_of_switchBoards=[2]
+number_of_switchBoards=[]
+number_of_polled_boards=[]
+meshnetworkArry = nx.DiGraph()
+meshTempEdgesArry = []
+meshShortestpath = {}
+mesh = {}
+old_network={}
+pollingFlag=0
+Rpi_ip = ''
+
+FromWitchSide = ''
+LastSwitch = ''
+LastSwitchStatus = ''
+received_data = ''
+list_off_switch_boards = []
+UserSerialNo = ''
+srialInruptCounter = 0
+
+
+Pir_timing = 30      # pir of timing in secound
+current_Polling = 'OFF'
+# try:
+#     with open('mesh_network.json') as json_file:
+#         mesh = json.load(json_file)
+#         mesh = {int(k): v for k, v in mesh.items()}
+#         print(mesh)
+#         if mesh != {}:
+#             y = []
+#             for i in mesh:
+#                 for j in mesh[i]:
+#                     y.append((i, j))
+#             meshnetworkArry.add_edges_from(y)
+#             print("data mesh net",meshnetworkArry)
+# except:
+#     pass
+# mesh=    {2: [4, 7, 9, 10, 13, 14, 16, 17, 19], 3: [4, 5, 18, 19], 4: [3, 6, 7, 9, 10, 16, 18, 19], 5: [4, 6, 9, 18], 6: [4, 5, 7, 9, 10, 18], 7: [4, 6, 9, 10, 18], 9: [4, 5, 6, 16, 18, 19], 10: [4, 6, 7, 18, 19], 12: [], 13: [9, 12, 14, 16, 18], 14: [4, 13], 16: [4, 6, 9, 13, 18, 19], 17: [19], 18: [3, 4, 5, 6, 10, 16, 19], 19: [3, 4, 9, 10, 13, 16, 17, 18]}
+
+# if mesh != {}:
+#     y = []
+#     for i in mesh:
+#         for j in mesh[i]:
+#             y.append((i, j))
+#     meshnetworkArry.add_edges_from(y)
+#     print("data mesh net",meshnetworkArry)
+
+
+class iswitch(feature):
+    global number_of_switchBoards
+    def __init__(self):
+        try:
+            self.mydb = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="icity_admin",
+                database="datbase"
+            )
+        except:
+            print("data_base error")
+            print('commin self')
+
+        self.my = self.mydb.cursor()
+        sql_get_table_name = "SELECT   parent_id FROM  user_table"
+        self.my.execute(sql_get_table_name)  # exceuting query to sql
+        db_get_table_name = self.my.fetchall()
+        global UserSerialNo
+        UserSerialNo = db_get_table_name[0][0]
+        print("UserSerialNo",UserSerialNo)
+
+        sql_check = "SELECT id,status,rpi_ip,night_mode_from ,night_mode_to,speed,sw_on_time FROM flat_switch_data"
+        self.my.execute(sql_check)  # exceuting query to sql
+        res = self.my.fetchall()
+        print(res[0][-1])
+        self.swlist = res
+
+        global Rpi_ip
+        Rpi_ip = res[0][2]
+        global from_time
+        global to_time
+        from_time = res[0][3]
+        to_time = res[0][4]
+        # self.status = []
+        self.active_room = []
+        self.speed=[]
+        for k in res:
+            #print(k[1])
+            # self.status.append(k[11])  # create status dict
+            self.active_room.append(k[1])
+            # Append the speed at initially when program runs
+            self.speed.append(k[5])
+        self.any_chages_sys_info = {'no_of_row': 0, 'local_ip': ni.ifaddresses('wlan0')[
+            ni.AF_INET][0]['addr']}
+        sql_system_config = "SELECT * FROM  system_infomation"
+        self.my.execute(sql_system_config)  # exceuting query to sql
+        result = self.my.fetchall()
+        self.any_chages_sys_info['no_of_row'] = len(result)
+
+        self.schedule_timings = []
+        self.schedule_timings1 = []
+        self.schedule_timings2 = []
+        self.schedule_list = []           
+        sql_check = "SELECT  switch_id,on_time,off_time,status_to_be,days FROM    switch_scheduling_information"
+        self.my.execute(sql_check)  # exceuting query to sql
+        self.schedule_list = self.my.fetchall()
+        # autoUpdate_query = "update flat_switch_data set auto_mode='0',manual_mode='0'"
+        # self.my.execute(autoUpdate_query,)
+        # self.mydb.commit()
+        # print("auto mannual updated")
+
+        # HERE TOTAL NUMBER OF SWITCHBOARDS WE RETRIEVE FROM DATABASE
+        total_board_query="SELECT swb_no_rpi FROM flat_switch_data"
+        self.my.execute(total_board_query)
+        self.total_boards=self.my.fetchall()
+        for boards in self.total_boards:
+            total_number_of_switchBoards.append(int(boards[0]))
+        # THIS number_of switchboards VARIABLE IS USED TO COMPARE THE LIST OF POLLING SWITCHBOARDS
+        # number_of_switchBoards=list(set(total_number_of_switchBoards))
+        # print("TOTAL NUMBER OF SWITCHBOARDS IN THIS FLAT=",len(number_of_switchBoards),'\n',number_of_switchBoards)
+
+    def ReadSerial(self, nRFPath):
+        global srialInruptCounter
+        global pollingFlag
+        srialInruptCounter = 0
+        data = []
+        GPIO.output(23,GPIO.HIGH)
+        ser.write(struct.pack('B'*len(nRFPath), *nRFPath))
+        # print("serial data reading")
+        send_time=time.time()
+        while True:
+            received_data = ''
+            # this loop has problem its not out from the loop
+            while received_data != bytes([128]):
+                # print(received_data)
+                received_data = ser.read()
+                if (received_data==b'' ):    #and srialInruptCounter <2):
+                    # pass
+                    # print('data receiving empty serial interrupt to resend',
+                    #       received_data)
+                    # print('re-transmitting', nRFPath)
+                    # ser.write(struct.pack('B'*len(nRFPath), *nRFPath))
+                    # srialInruptCounter =srialInruptCounter+1
+                    # print("srialInruptCounter=",srialInruptCounter)
+                    # break
+                    return [14, nRFPath[3], nRFPath[4]]
+                    # break
+                    # if srialInruptCounter == 2:
+                    #     # data[0] = 14
+                        # return [14, nRFPath[3], nRFPath[4]]
+            dataLength = ser.read()
+            data = list(ser.read(dataLength[0]))
+            # return data
+            # POLLING DATA RETURN
+            if data[0] == 2 and data[-2] == nRFPath[4] and data[-1] == 129:    #and pollingFlag == 1: 
+                GPIO.output(23,GPIO.LOW)
+                return data
+            # SWITCH OPERATION DATA RETURN FROM SWITCHBOARD
+            elif data[0] == 13 and data[-2] == nRFPath[4] and data[-1] == 129:    #and pollingFlag == 0:
+                GPIO.output(23,GPIO.LOW)
+                print(data)
+                return data
+            # FAN REGULATION DATA RETURN FROM SWITCHBOARD
+            elif data[0] == 13 and data[-3] == nRFPath[4] and data[-2] == nRFPath[5] and data[-1] == 129: #for fan regulation 
+                GPIO.output(23,GPIO.LOW)
+                print(data)
+                return data
+            # hear 10 is secounds ones data send wait for 10 secound data not recived means break while loop
+            if(time.time()-send_time > 8):   #and pollingFlag==1:
+                print(" mesh polling data not received so breaking loop")
+                return [14, nRFPath[3], nRFPath[4]]
+            elif(time.time()-send_time > 4):   #and pollingFlag ==0:
+                print(" switch press data not received so breaking loop")
+                return [14, nRFPath[3], nRFPath[4]]
+        
+
+    def sendNrfData(self, All_path, switchID, switchStatus):
+        # Making switch command to on / off the switch by adding last digit of switchID with status. 
+        # for example (off K2 switch of any board we send 8 and for on K2 send 9)
+        swIntNumb = int(bin(int(switchID[-1]))+switchStatus, 2)   
+        # print(All_path, switchID, switchStatus, swIntNumb)
+        pathCount=0
+        # print("pollingFlag:",pollingFlag)
+        for path in All_path[0:4]:
+            pathCount=pathCount+1
+            path.reverse()
+            path.insert(0, 128), path.insert(1, len(
+                path)-1), path.insert(2, 1), path.insert(3, swIntNumb)
+            print("Rf data ", path)
+            # if (ser.inWaiting() >= 1):
+            ack_switch = self.ReadSerial(path)
+            # print('serial data recived ', ack_switch)
+            if ack_switch[0] == 13 and ack_switch[1] == swIntNumb and ack_switch[2] == path[4] and ack_switch[-1] == 129:
+                print('successfully send in 1shot',
+                      ack_switch[0], ack_switch[1], ack_switch[2])
+                #self.PostData(switchID, switchStatus[-1])    
+                break
+            # if switch press data is not recieved in main board then after 4 seconds its break the loop due to this our program not stuck in a while loop
+            elif ack_switch[0]==14 and ack_switch[1]==swIntNumb and ack_switch[2]==path[4]:
+                print("data not received so negative ack send")
+                break
+            elif pathCount >=3:   #and pollingFlag==0:
+                print("board not connected or board is reset please check the board")
+                #send self polling command to that board 
+                # update value in database as board not working
+                # after sending self polling command if board get response then update as board is working
+                break
+            
+            # else:
+            #     ser.write(struct.pack('B'*len(path), *path))
+            # ack_switch[0] = 6
+            # ack_switch[0] = 13
+            # ack_switch[2] = swIntNumb
+            # ack_switch = [6, 13, swIntNumb]
+            # ack_switch[2] = bytes(swIntNumb)
+            # print(ack_switch[0], ack_switch[1], ack_switch[2])
+            # count = 0
+
+            # while(count < 10):
+            #     ser.write(struct.pack('B'*len(path), *path))
+            #     if (ser.inWaiting() >= 1):
+            #         ack_switch = self.ReadSerial()
+
+            #         if ack_switch[0] == 13 and ack_switch[-1] == swIntNumb:
+            #             print('successfully send count while',
+            #                   ack_switch[0], ack_switch[1], ack_switch[2])
+            #             self.PostData(switchID, switchStatus[-1])
+            #             break
+            #     time.sleep(0.001)
+            #     count += 1
+
+            # else:
+            #     ser.write(struct.pack('B'*len(path), *path))
+            # if ack_switch[1] == 14:
+            #     print(
+            #         "cant reach the board please check switch board", swIntNumb)
+    
+    # this function is for mobile app when user is press switch from mobile app side
+    def mobile_app_side(self, id, status):
+        global FromWitchSide
+        ser.timeout = 2
+        if FromWitchSide == 'switch_board_side':
+            FromWitchSide = 'app_side'
+            print("switch press from switch board side")
+            return
+        split_id = id.split('_')
+        Switch_Board = split_id[-1][:-1]
+        Switch = split_id[-1][-1]
+        sql_check = "SELECT swb_no_rpi FROM flat_switch_data where id=%s"
+        self.my.execute(sql_check, (id,))  # executing query to sql
+        rpiSwitchBoard = self.my.fetchall()
+        All_patch_to_Switch_board = list(nx.all_simple_paths(meshnetworkArry,
+                                                    MainSwitchBordNo, int(rpiSwitchBoard[0][0]), cutoff=3))
+        All_patch_to_Switch_board.sort(key=len)
+        if status == '0':
+            if project == 'RF_mesh':
+                self.sendNrfData(All_patch_to_Switch_board, id, '00')
+                # path = All_patch_to_Switch_board[0]
+                # path.reverse()
+                # path.insert(0, 128), path.insert(1, len(
+                #     path)-1), path.insert(2, 1), path.insert(3, int(bin(int(Switch))+'00', 2))
+                # print("Rf data ", path)
+                # ser.write(struct.pack('B'*len(path), *path))
+            else:
+                ser.write(struct.pack('BBBB',  128,
+                                    int(Switch_Board), 1, int(bin(int(Switch))+'00', 2)))
+                self.PostData(id, status)
+            # print(128, int(Switch_Board), 1, int(bin(int(Switch))+'00', 2))
+        elif status == '1':
+            if project == 'RF_mesh':
+                self.sendNrfData(All_patch_to_Switch_board, id, '01')
+
+                # path = All_patch_to_Switch_board[0]
+                # path.reverse()
+                # path.insert(0, 128), path.insert(1, len(
+                #     path)-1), path.insert(2, 1), path.insert(3, int(bin(int(Switch))+'01', 2))
+                # # print("Rf data ", path)
+                # ser.write(struct.pack('B'*len(path), *path))
+                # x = datetime.datetime.now()
+                # print('ON timestamp', x)
+            else:
+                ser.write(struct.pack('BBBB',128,int(Switch_Board), 1, int(bin(int(Switch))+'01', 2)))
+                self.PostData(id, status)
+                print(128,int(Switch_Board), 1, int(bin(int(Switch))+'01', 2))
+
+    # This function is used when status is changed for any switch its contionously read the status of every switch
+    def databaseRefresher(self):
+        try:
+            mydb = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="icity_admin",
+                database="datbase"
+            )
+        except:
+            print("data_base error")
+
+        my = mydb.cursor()
+        sql_check = "SELECT id,status,speed,switch_type FROM flat_switch_data "
+        my.execute(sql_check)  # executing query to sql
+        res = my.fetchall()
+        j = 0
+        # k = 0
+        for row in res:
+            if row[1] == None:
+                row[1] = '0'
+            if row[1] != str(self.active_room[j]):
+                # if row[0][-8:-3] == 'Hall':
+                # if row[0][-8:-3] == 'Room1' or row[0][-8:-3] == 'Room2':
+                print('event came')
+                print("ID: " + row[0])  # ID
+                print("status:",row[1])  # updated status
+                self.active_room[j] = row[1]  # updating
+                # if row[3]=='Fan':
+                #     print("fan is coming")
+                #     self.fanRegulation(row[0],row[1])
+                # else:
+                self.mobile_app_side(row[0], row[1])
+            j = j + 1
+            
+            # this is for fan regulation if any change happens in speed its detects and call the function fanRegulation()
+            # if row[2] !=str(self.speed[k]):
+            #     print("fan event came",row[0])
+            #     self.speed[k] = row[2]  #updating
+            #     self.fanRegulation(row[0],row[2])
+            # k = k + 1
+        
+        # sql_offline = "SELECT id,status FROM offline_switchs "
+        # my.execute(sql_offline)  # exceuting query to sql
+        # x = my.fetchall()
+        # if x != []:
+        #     self.VpnNotWorking()
+        #     try:
+        #         stri = "https://www.google.co.in"
+        #         urllib.request.urlopen(stri)
+        #         for i in x:
+        #             self.PostData(i[0], i[1])
+        #             sql = "DELETE FROM offline_switchs WHERE id =%s"
+        #             my.execute(sql, (i[0],))
+        #         mydb1.commit()
+        #     except:
+        #         print("No internet")
+    def fanRegulation(self,id,status):
+        print("comming to fan regulation function")
+        global FromWitchSide
+        ser.timeout = 2
+        if FromWitchSide == 'switch_board_side':
+            FromWitchSide = 'app_side'
+            print("switch press from switch board side")
+            return
+        split_id = id.split('_')
+        # Switch_Board = split_id[-1][:-1]
+        # Switch = split_id[-1][-1]
+        sql_check = "SELECT swb_no_rpi,switch_id,speed FROM flat_switch_data where id=%s"
+        self.my.execute(sql_check, (id,))  # exceuting query to sql
+        rpiSwitchBoard = self.my.fetchall()
+        switch_id=rpiSwitchBoard[0][1]
+        All_path= list(nx.all_simple_paths(meshnetworkArry,
+                                                    MainSwitchBordNo, int(rpiSwitchBoard[0][0]), cutoff=3))
+        All_path.sort(key=len)
+        # if status=='5':
+        pathCount=0
+        for path in All_path[0:4]:
+            pathCount=pathCount+1
+            path.reverse()
+            path.insert(0, 128), path.insert(1, len(
+                path)-1), path.insert(2, 6), path.insert(3, int(status)),path.insert(4,int(switch_id))
+            print("Rf data ", path)
+            ack_switch = self.ReadSerial(path)
+            if ack_switch[0] == 13 and ack_switch[1] == switch_id and ack_switch[2] == path[5] and ack_switch[-1] == 129:
+                print('successfully send in 1shot',
+                    ack_switch[0], ack_switch[1], ack_switch[2])
+                break
+            # if switch press data is not recieved in main board then after 4 seconds its break the loop due to this our program not stuck in a while loop
+            elif ack_switch[0]==14 and ack_switch[1]==status and ack_switch[2]==path[4]:
+                print("Negative ack from board")
+                break
+
+
+    # when user press switch from switch board side then its turn on the switch and update status in the database in gateway and in server
+    def switchBoard_side(self, Serial_data):
+        global FromWitchSide
+        FromWitchSide = 'switch_board_side'
+        # try:
+        # ex Serial_data="x01/x1/x05"
+        Sw_Bord = Serial_data[-2]
+        Cmd = Serial_data[1]
+        Data = bin(Serial_data[1])
+        Status = Data[-2:]
+        Switch_ID = str(int(Data[:-2], 2))
+        # my = self.mydb.cursor()
+        sql_check = "SELECT id FROM flat_switch_data where swb_no_rpi=%s and switch_id=%s"
+        # exceuting query to sql
+        self.my.execute(sql_check, (Sw_Bord, Switch_ID,))
+        ID = self.my.fetchall()
+        ID = ID[0][0]
+        if Status == '01':
+            # ser.write(struct.pack(
+            #     'BBBB', 128, Serial_data[0], 13, Serial_data[2]))
+            self.PostData(ID, '1')
+            # self.updateManualMode(ID,'1')
+            # print(128, Serial_data[0], 13, Serial_data[2])
+        elif (Status == '00'):
+            # ser.write(struct.pack(
+            #     'BBBB', 128, Serial_data[0], 13, Serial_data[2]))
+            self.PostData(ID, '0')
+            # self.updateManualMode(ID,'1')
+            # print(128, Serial_data[0], 13, Serial_data[2])
+        # except:
+        #     print("invalid switch board to identify")
+        
+    def time_to_secound(self,time):
+        return (datetime.strptime(time, "%H:%M:%S") - datetime(1900, 1, 1)).total_seconds()
+
+    def automation(self, data):
+        try:
+            mydb1 = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="icity_admin",
+                database="datbase"
+            )
+        except:
+            print("data_base error")
+
+        my = mydb1.cursor()
+        Sw_Bord = data[-2]
+        Cmd = data[0]
+        Data = data[1]
+        
+        manual_automation_query = "SELECT automation_disable FROM flat_switch_data where  swb_no_rpi=%s"
+        # exceuting query to sql
+        my.execute(manual_automation_query, (str(Sw_Bord),))
+        m_a_sql = my.fetchall()    
+        # manualy switch is off and automation means user dont want that thing so that time it will come out of this function
+        if m_a_sql[0][0] == '0':
+            print("Automation is disable from mobile app side")
+            return
+            
+        
+        sql_check = "SELECT mode_information.switch_id,on_time, off_time,mode,status_to_be,is_activated FROM flat_switch_data,mode_information where flat_switch_data.swb_no_rpi=%s and mode_information.switch_id= flat_switch_data.id"
+        my.execute(sql_check, (Sw_Bord,))
+        CheckModeTime = my.fetchall()
+        # print(CheckModeTime)
+        if Data == 1 and Cmd == 5:
+
+            if CheckModeTime != []:
+                ModeStatus=0
+                
+                for switch in CheckModeTime:
+                    current_time_in_sec=self.time_to_secound(datetime.now().strftime("%H:%M:%S"))
+                    modeOnTime=self.time_to_secound(switch[1])
+                    modeOffTime=self.time_to_secound(switch[2])
+                    if (current_time_in_sec in range(int(modeOnTime), int(modeOffTime))) and switch[5]=='1':
+                        ModeStatus=1
+                        ModeName=switch[3]
+                        self.PostAutoModeData(switch[0], switch[4])
+                        # url = 'http://' + self.any_chages_sys_info['local_ip'] + ':80' + "/i-switch/postAutoModeData.php?id=" + switch[0] +"&status="+switch[4]
+                        # print(url)
+                        # url = url.replace(" ", "%20")
+                        # loc_rsp = urllib.request.urlopen(url, timeout=3)
+                        # loc_data = loc_rsp.read().decode("utf-8")
+                if ModeStatus==1:
+                    print('This room in', ModeName, 'Mode')    
+                    print("comming")
+                    return
+
+
+            # USER VALUES GIVEN BY THE MOBILE APP
+            user_value_query="select pir_th,temp_th,lm_th from flat_switch_data where swb_no_rpi=%s"
+            my.execute(user_value_query,(str(Sw_Bord),))
+            user_given_threashold_value=my.fetchall()
+           
+            #print(user_given_threashold_value[0][0],user_given_threashold_value[0][1],user_given_threashold_value[0][2])
+            user_given_pir=int(user_given_threashold_value[0][0])
+            user_given_temp=int(user_given_threashold_value[0][1])
+            user_given_lux=int(user_given_threashold_value[0][2])
+            # print("user_given_pir=",user_given_pir,"user_given_temp=",user_given_temp,"user_given_lux=",user_given_lux)
+
+            # paths = list(nx.all_simple_paths(meshnetworkArry,
+            #                                  MainSwitchBordNo, Sw_Bord, cutoff=3))
+            # if CheckModeTime != [] and current_time_in_sec in range(int(CheckModeTime[0][0].total_seconds()), int(CheckModeTime[0][1].total_seconds())):
+            #     sql_check = "SELECT id,flat_switch_data.switch_id,status FROM flat_switch_data,mode_information where flat_switch_data.switch_type='Fan' and flat_switch_data.swb_no_rpi=%s and mode_information.switch_id=id and mode_information.status_to_be=mode_information.is_activated"
+            # else:
+            #     sql_check = "SELECT id,switch_id,status FROM flat_switch_data where switch_type='Fan' and swb_no_rpi=%s"
+            sql_check = "SELECT id,switch_id,status,temperature,manual_mode,auto_mode FROM flat_switch_data where switchname='Fan' and swb_no_rpi=%s"
+            # exceuting query to sql
+            my.execute(sql_check, (str(Sw_Bord),))
+            switch_board_fan_db_id = my.fetchall()
+            
+            Fan_Switch_Board = {}
+            Fan_Switch_Board_Arr = []
+            for i in switch_board_fan_db_id:
+                Fan_Switch_Board['id'] = [i[0], i[1], i[2]]
+                Fan_Switch_Board_Arr.append(Fan_Switch_Board)
+                Fan_Switch_Board = {}
+            
+            # if CheckModeTime != [] and current_time_in_sec in range(int(CheckModeTime[0][0].total_seconds()), int(CheckModeTime[0][1].total_seconds())):
+            #     sql_check = "SELECT id,flat_switch_data.switch_id,status FROM flat_switch_data,mode_information  where flat_switch_data.switch_type='Light' and flat_switch_data.swb_no_rpi=%s and mode_information.switch_id=id and mode_information.status_to_be=mode_information.is_activated"
+            # else:
+            #     sql_check = "SELECT id,switch_id,status FROM flat_switch_data where switch_type='Light' and swb_no_rpi=%s"
+            sql_check = "SELECT id,switch_id,status,luminosity,manual_mode,auto_mode FROM flat_switch_data where switchname='Light' and swb_no_rpi=%s"
+            # exceuting query to sql
+            my.execute(sql_check, (str(Sw_Bord),))
+            switch_board_light_db_id = my.fetchall()
+
+            Light_Switch_Board = {}
+            Light_Switch_Board_Arr = []
+            for i in switch_board_light_db_id:
+                Light_Switch_Board['id'] = [i[0], i[1], i[2]]
+                Light_Switch_Board_Arr.append(Light_Switch_Board)
+                Light_Switch_Board = {}
+            
+            if Data == 1:
+                if Fan_Switch_Board_Arr != []:
+                    Fan_Manual_mode=switch_board_fan_db_id[0][4]
+                    Fan_Auto_mode=switch_board_fan_db_id[0][5]
+                    temparaturValue = int(float(switch_board_fan_db_id[0][3]))
+                    # this for checking user old action (bcz if user dont want fan or any appliances to check rite so if manualy user is off that dont have turn on perpose )
+                    # user manualy disable switch he dont want to turn on automiticalt
+                    if Fan_Manual_mode=='1':
+                        print("Fan is in manual mode ")
+                        pass
+                    elif (Fan_Auto_mode=='1' or Fan_Auto_mode=='0') and Fan_Manual_mode=='0':
+                        print("fan is in auto mode")
+                        if temparaturValue >= user_given_temp:
+                            self.PostAutoModeData(Fan_Switch_Board_Arr[0]['id'][0], '1')
+                            print("PIR detects then fan turn on")
+                            self.updateAutoMode(Fan_Switch_Board_Arr[0]['id'][0],'1')
+                            print("going to update auto mode")
+                        else:
+                            self.PostAutoModeData(Fan_Switch_Board_Arr[0]['id'][0], '0')
+                            self.updateAutoMode(Fan_Switch_Board_Arr[0]['id'][0],'0')
+               
+                if Light_Switch_Board_Arr != []:
+                    Light_Manual_mode=switch_board_light_db_id[0][4]
+                    Light_Auto_mode=switch_board_light_db_id[0][5]
+                    luxValue = int(float(switch_board_light_db_id[0][3]))
+                    if Light_Manual_mode=='1':
+                        print("Light is manual mode ")
+                        pass # user manualy disable switch he dont want to turn on automiticalt
+                    elif (Light_Auto_mode=='1' or Light_Auto_mode=='0') and Light_Manual_mode=='0':
+                        print("light is in auto mode")
+                        if luxValue < user_given_lux:
+                            self.PostAutoModeData(Light_Switch_Board_Arr[0]['id'][0], '1')
+                            self.updateAutoMode(Light_Switch_Board_Arr[0]['id'][0], '1')
+                        else:
+                            self.PostAutoModeData(Light_Switch_Board_Arr[0]['id'][0], '0')
+                            self.updateAutoMode(Light_Switch_Board_Arr[0]['id'][0], '0')
+                            
+                # mydb1.commit()
+                my = mydb1.cursor()
+                sql_check = "SELECT status,auto_mode FROM flat_switch_data where (switchname='Light' or switchname='Fan') and swb_no_rpi=%s"
+                
+                # exceuting query to sql
+                my.execute(sql_check, (str(Sw_Bord),))
+                switch_board_pir_db_id = my.fetchall()
+                #Auto_mode=switch_board_pir_db_id[0][1]
+            
+                global Pir_timing
+                Pir_timing = user_given_pir*60
+                # print(Pir_timing)
+
+                # checking all switch status which PIR detected Switch Board if its OFF means no need to go for again OFF condition
+                # and all([i == ('0',) for i in automation_switch_board_pir_db_id]) == True:
+                if all([i == ('0',) for i in switch_board_pir_db_id]) == True:
+                    print("comming hear")
+                    return
+
+                pir_list = [str(Sw_Bord)]
+                
+                for i in pir_list:
+                    sw_bord_thread_name_to_off = i
+                    i = threading.Timer(Pir_timing, self.Pir_OFF_Mode, args=(
+                        Fan_Switch_Board_Arr, Light_Switch_Board_Arr))
+                    i.setName(sw_bord_thread_name_to_off)
+                    i.start()
+                    list_off_switch_boards.append(i)
+                    pir_detected_time = datetime.now()
+                    str_time = str(pir_detected_time)
+                    current_minit = int(str_time[14:16])
+                    current_sec = int(str_time[17:19])
+
+
+                    print("pir detectected current time in this board",Sw_Bord,
+                         current_minit, ":", current_sec)
+                    print("switch board ", sw_bord_thread_name_to_off,
+                          " send OFF commend it will off in ", current_minit+int(user_given_pir), ":", current_sec)
+        else:
+            print("Pir data incorect")
+
+    def Pir_OFF_Mode(self, Fan_Switch_Board_Arr, Light_Switch_Board_Arr):
+        print("turn off light and fan switch",Fan_Switch_Board_Arr,Light_Switch_Board_Arr)
+        for i in Fan_Switch_Board_Arr:
+            print("turn off fan ",i)
+            self.PostAutoModeData(i['id'][0], '0')
+            self.updateManualMode(i['id'][0], '0')
+        for i in Light_Switch_Board_Arr:
+            print("turn off light ",i)
+            self.PostAutoModeData(i['id'][0], '0')
+            self.updateManualMode(i['id'][0], '0')
+    
+    # this function is used to update auto mode when pir is detectes and fan light is turn on
+    # written by naveen singh on date 20 feb 2023
+    def updateAutoMode(self,switch_id,auto):
+        try:
+            mydb1 = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="icity_admin",
+                database="datbase"
+            )
+        except:
+            print("data_base error")
+        my = mydb1.cursor()
+        # auto mode update query
+        automode_update_query="UPDATE flat_switch_data set auto_mode=%s where id=%s"
+        my.execute(automode_update_query,(str(auto),str(switch_id),))
+        mydb1.commit()
+        print("auto mode updated sucessfully")
+    
+    # this function is used to update manual mode when user press switch from switch board  side and mobile app side
+    # its check the condition when auto_mode =0 then its only update manual_mode=1 otherwise its update auto_mode=0 and manual_mode=1
+    # this function is also useful for clearing manual_mode from 1 to 0 when pir not detected for a given interval of time 
+    # written by naveen singh on 22 feb 2023
+    def updateManualMode(self,switch1_id,manual):
+        try:
+            mydb1 = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="icity_admin",
+                database="datbase"
+            )
+        except:
+            print("data_base error")
+        auto_mode_set='0'
+        my = mydb1.cursor()
+        query_for_auto="SELECT auto_mode from flat_switch_data where id=%s"
+        my.execute(query_for_auto,(str(switch1_id),))
+        auto_mode_check=my.fetchall()
+        print(auto_mode_check[0])
+        # Here we check auto mode if automation is on and user press the switch its update auto_mode=0 and manual_mode=1
+        if auto_mode_check[0][0]=='1':
+            # manual mode and auto mode update query
+            update_manual_query="UPDATE flat_switch_data set auto_mode=%s,manual_mode=%s where id=%s"
+            my.execute(update_manual_query,(str(auto_mode_set),str(manual),str(switch1_id),))
+            mydb1.commit()
+            print("when auto_mode==1 its update manual mode as 1")
+        # Here we check auto mode if its 0 then only update manual mode=1
+        elif auto_mode_check[0][0]=='0':
+            # manual mode update query 
+            update_auto_manual_query="UPDATE flat_switch_data set manual_mode=%s where id=%s"
+            my.execute(update_auto_manual_query,(str(manual),str(switch1_id),))
+            mydb1.commit()
+        print("manual mode updated sucessfully")
+
+
+    # def temp_ADC_calc(self, ADC):
+    #     ADC_10_bit_val = ADC << 2
+    #     voltage = (ADC_10_bit_val * 5.0) / 1023  # voltage caluculation
+    #     volt_very = 2.5
+    #     Normal_room_temp = 25.0
+    #     value = voltage - volt_very
+    #     x = value / 0.05
+    #     Degree_celsius = Normal_room_temp + x
+    #     return Degree_celsius
+
+
+    def temp_ADC_calc(self, ADC):
+        # We are caluculating ADC - witch NTC thermister regestence value (currently we are use 10k regester connected to sensor  so 10000)
+        NTC_Resistance = ((1023*10000/ADC) - 10000)
+        Thermistor_temperature = (1.0/(25 + 273.15)) + \
+            ((1.0/3950) * math.log(NTC_Resistance/10000)
+             )  # final temparature result in kelvin
+        # final result of kelvin to celsius
+        Thermistor_temperature = (1/Thermistor_temperature) - 273.15
+        return Thermistor_temperature
+
+    def post_data_to_server(self, ser_url, url):
+        # try:
+        if current_Polling == 'OFF':
+            maxm_try3=3
+            for i in range(maxm_try3):
+                try:
+                    ser_rsp = urllib.request.urlopen(ser_url, timeout=4)
+                    ser_data = ser_rsp.read().decode("utf-8")
+                    # ser_data = 'done'
+                    break
+                except:
+                    print("not send data")
+        else:
+            print("its current polling time")
+            ser_data = 'done'
+        maxm_try4=3
+        for i in range(maxm_try4):
+            try:
+                loc_rsp = urllib.request.urlopen(url, timeout=4)
+                loc_data = loc_rsp.read().decode("utf-8")
+                break
+            except:
+                print("data not update")
+        if ser_data == 'done' and loc_data == 'done':
+            #print("post to server first attempt")
+            return
+        # except:
+        #     print("excpt to past part")
+        #     self.VpnNotWorking()
+        #     # start = ser_url.find('&id')
+        #     # end = ser_url.find('&status')
+        #     # sql_check = "INSERT INTO  offline_switchs (id,status) VALUES (%s,%s)"
+        #     # self.my.execute(
+        #     #     sql_check, (ser_url[start+4:end], ser_url[-1],))
+        #     # self.mydb.commit()
+
+        return
+
+    def PostData(self, ID, status):
+
+        # ------------------------getting ip addres pi machine ----------------
+        try:
+            host = ni.ifaddresses('wlan0')[ni.AF_INET][0]['addr']
+        except:
+            try:
+                host = ni.ifaddresses('eth0')[ni.AF_INET][0]['addr']
+            except:
+                print('no host')
+        # ----------------------------------------------------------------------
+        # host = '192.168.1.16'
+        port = '80'  # reciving data port number
+        # host='127.0.0.1'
+
+        ser_url = "http://3.128.231.248/i-switch/automation/update_status.php?sl_no=" + \
+            UserSerialNo+"&id="+ID + "&status="+str(status)
+
+        url = 'http://' + host + ':' + port + \
+            "/i-switch/postData.php?id=" + ID + \
+            "&status=" + str(status)
+        url = url.replace(" ", "%20")
+        ser_url = ser_url.replace(" ", "%20")
+        # postdata = threading.Thread(target=D.post_data_to_server(ser_url, url))
+        postdata = Thread(target=self.post_data_to_server,
+                          args=(ser_url, url))
+        postdata.start()
+        return
+
+    def PostAutoModeData(self, ID, status):
+        # ------------------------getting ip addres pi machine ----------------
+        try:
+            host = ni.ifaddresses('wlan0')[ni.AF_INET][0]['addr']
+        except:
+            try:
+                host = ni.ifaddresses('eth0')[ni.AF_INET][0]['addr']
+            except:
+                print('no host')
+        # ----------------------------------------------------------------------
+        # host = '192.168.1.16'
+        # host='127.0.0.1'
+        port = '80'  # reciving data port number
+
+        # ser_url = "http://18.216.220.165/i-switch/automation/update_Auto_mode_status.php?sl_no=" + \
+        #     UserSerialNo+"&id="+ID + "&status="+str(status)
+
+        url = 'http://' + host + ':' + port + \
+            "/i-switch/postAutoModeData.php?id=" + ID + "&status=" + \
+            str(status)
+        url = url.replace(" ", "%20")
+        # print(url)
+        maxm_try2=3
+        for i in range(maxm_try2):
+            try:
+                loc_rsp = urllib.request.urlopen(url, timeout=3)
+                loc_data = loc_rsp.read().decode("utf-8")
+                print(loc_data)
+                break
+            except:
+                print("not update switch data")
+
+        # postdata = threading.Thread(target=D.post_data_to_server(ser_url, url))
+        # postautomodedata = Thread(target=self.post_data_to_server,
+        #                          args=(ser_url, url))
+        # postautomodedata.start()
+        return
+
+    def schedule_switches(self, id, from_time, to_time, state, days=None):
+        on_time = str(from_time)
+        off_time = str(to_time)
+        on_time = on_time[:-3]
+        off_time = off_time[:-3]
+
+        if on_time[1] == ':':
+            on_time = '0'+on_time
+        if off_time[1] == ':':
+            off_time = '0'+off_time
+
+        print(on_time, off_time)
+        if state == '1':
+            print('scheduler is activated')
+            day_list = days.split(',')
+            for day in day_list:
+                day=day[0:3]
+                if day == 'Mon':
+                    on = schedule.every().monday.at(on_time).do(
+                        self.PostData, id, '1').tag(id+on_time)
+                    off = schedule.every().monday.at(off_time).do(
+                        self.PostData, id, '0').tag(id+off_time)
+                elif day == 'Tue':
+                    on = schedule.every().tuesday.at(on_time).do(
+                        self.PostData, id, '1').tag(id+on_time)
+                    off = schedule.every().tuesday.at(off_time).do(
+                        self.PostData, id, '0').tag(id+off_time)
+                elif day == 'Wed':
+                    on = schedule.every().wednesday.at(on_time).do(
+                        self.PostData, id, '1').tag(id+on_time)
+                    off = schedule.every().wednesday.at(off_time).do(
+                        self.PostData, id, '0').tag(id+off_time)
+                elif day == 'Thu':
+                    on = schedule.every().thursday.at(on_time).do(
+                        self.PostData, id, '1').tag(id+on_time)
+                    off = schedule.every().thursday.at(off_time).do(
+                        self.PostData, id, '0').tag(id+off_time)
+                elif day == 'Fri':
+                    on = schedule.every().friday.at(on_time).do(
+                        self.PostData, id, '1').tag(id+on_time)
+                    off = schedule.every().friday.at(off_time).do(
+                        self.PostData, id, '0').tag(id+off_time)
+                elif day == 'Sat':
+                    on = schedule.every().saturday.at(on_time).do(
+                        self.PostData, id, '1').tag(id+on_time)
+                    off = schedule.every().saturday.at(off_time).do(
+                        self.PostData, id, '0').tag(id+off_time)
+                elif day == 'Sun':
+                    on = schedule.every().sunday.at(on_time).do(
+                        self.PostData, id, '1').tag(id+on_time)
+                    off = schedule.every().sunday.at(off_time).do(
+                        self.PostData, id, '0').tag(id+off_time)
+        elif state == '0':
+            print('scheduler is deactivated')
+            schedule.clear(id+off_time)
+            schedule.clear(id+on_time)
+
+    def DbRefresherScheduleSwitch(self):
+        try:
+            mydb = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="icity_admin",
+                database="datbase"
+            )
+        except:
+            print("data_base error")
+        my = mydb.cursor()
+        sql_check = "SELECT   switch_id  ,on_time,off_time , status_to_be,days, delete_switch  FROM    switch_scheduling_information"
+        my.execute(sql_check)  # exceuting query to sql
+        current_schedule_list = my.fetchall()
+        if current_schedule_list != []:
+            j = 0
+            for row in current_schedule_list:
+                if len(current_schedule_list) > len(self.schedule_list):
+                    self.schedule_switches(
+                        current_schedule_list[-1][0], current_schedule_list[-1][1], current_schedule_list[-1][2], current_schedule_list[-1][3], current_schedule_list[-1][4])
+                    self.schedule_list = current_schedule_list
+                elif row[5] == '1':
+                    print('delete scheduler')
+                    self.schedule_switches(
+                        row[0], row[1], row[2], '0', row[4])
+                    sql = "DELETE FROM switch_scheduling_information WHERE  switch_id =%s AND on_time=%s AND off_time=%s "
+                    my.execute(sql, (row[0], row[1], row[2],))
+                    mydb.commit()
+                    self.schedule_list = current_schedule_list
+                elif row[3] != self.schedule_list[j][3]:
+                    self.schedule_switches(
+                        row[0], row[1], row[2], row[3], row[4])
+                    self.schedule_list = current_schedule_list
+                j += 1
+
+    def find_shortest_path(self, graph, start, end, path=[]):
+
+        path = path + [start]
+        if start == end:
+            return path
+        if not graph.get(start):
+            return None
+        shortest = None
+        for node in graph[start]:
+            if node not in path:
+                newpath = self.find_shortest_path(graph, node, end, path)
+                if newpath:
+                    if not shortest or len(newpath) < len(shortest):
+                        shortest = newpath
+        return shortest
+
+    # this function it will find the all switch board paths and shortes paths it will give
+    def find_all_paths(self, graph, start, end, path=[]):
+        # example find_all_paths(graph_name, 0, 4)  in this graph_name is network array then next parameter is main switch board id(source)  next parameter is destination switch board number
+        path = path + [start]
+        # output  [[0, 5, 4], [0, 2, 6, 4], [0, 5, 6, 4], [0, 3, 10, 4]]
+        if start == end:
+            return [path]
+        if not graph.get(start):
+            return []
+        paths = []
+        for node in graph[start]:
+            if node not in path:
+                newpaths = self.find_all_paths(graph, node, end, path)
+                for newpath in newpaths:
+                    if len(newpath) <= 5:
+                        paths.append(newpath)
+                    if len(paths) == 5:
+                        paths.sort(key=len)
+                        return paths
+        paths.sort(key=len)
+        return paths
+
+    def updateNetwort(self):
+        global meshnetworkArry
+        global meshTempEdgesArry
+        global pollingFlag
+        global number_of_polled_boards
+        ser.timeout = 10
+        for rspSwb in mesh:
+            for SwbPoll in mesh[rspSwb]:
+                if SwbPoll not in e and SwbPoll != 0:
+                    print("not exist", SwbPoll)
+                    GPIO.output(18,GPIO.HIGH)
+                    send = []
+                    paths = list(nx.all_simple_paths(meshnetworkArry,
+                                                     MainSwitchBordNo, SwbPoll, cutoff=3))
+                    paths.sort(key=len)
+                    # print("paths=",paths)
+                    # print("paths[0:4]=",paths[0:4])
+                    # here using four path only for polling the switch board after four path loops break
+                    for i in paths[0:4]:
+                        # pollingFlag=1
+                        i.reverse()
+                        send = i
+                        send.insert(0, 128), send.insert(
+                            1, len(i)-1), send.insert(2, 2), send.insert(3, 1)
+                        print(send)
+                         # while True:
+                        # print("mesh polling data",send)
+                        checkAck = self.ReadSerial(send)
+                        print("swb responce", list(checkAck[1:-2]))
+                        if checkAck[0] == 14 and SwbPoll == checkAck[-1]:
+                            print("negitive ack sending again",
+                                  checkAck[0], checkAck[1], checkAck[2])
+                        if checkAck[0] == 2 and SwbPoll == checkAck[-2] and checkAck[-1] == 129:
+                            
+                            for m in checkAck[1:-2]:
+                                meshTempEdgesArry.append((checkAck[-2], m))
+                            if e.get(checkAck[-2]) == None:
+                                e[checkAck[-2]] = checkAck[1:-2]
+                                meshTempEdgesArry = []
+                                for m in checkAck[1:-2]:
+                                    meshTempEdgesArry.append((checkAck[-2], m))
+                                meshnetworkArry.add_edges_from(
+                                    meshTempEdgesArry)
+                            GPIO.output(18,GPIO.LOW)
+                            # pollingFlag=0
+                           # time.sleep(0.5)
+                            break
+                        # if checkAck[0] == 2 and SwbPoll == checkAck[-2] and checkAck[-1] == 129:
+                        #     if e.get(checkAck[-2]) == None:
+                        #         e[checkAck[-2]] = checkAck[1:-2]
+                        #     break
+        
+        mesh.update(e)
+        sortedMesh={i: mesh[i] for i in sorted(mesh.keys())}
+        # meshUpdate_query = "UPDATE network set  mesh=%s"
+        # self.my.execute(meshUpdate_query, (str(sortedMesh),))
+        # self.mydb.commit()
+        print("updated amar mesh topolagy ", {
+              i: mesh[i] for i in sorted(mesh.keys())})
+        # number_of_polled_boards=[2]
+        x=[2]
+        for key in mesh:
+            for y in mesh[key]:
+                x.append(y)
+        x=list(set(x))
+        # number_of_polled_boards=sorted(list(e.keys()))
+        z=list(mesh.keys())
+        if x ==z:
+            number_of_polled_boards=sorted(list(e.keys()))
+        with open("mesh_network.json", "w+") as outfile:
+            json.dump(sortedMesh, outfile)
+        
+
+    def current_polling(self):
+        global current_Polling
+        current_Polling = 'NO'
+        switch_list_for_polling = self.swlist
+        for i in switch_list_for_polling:
+            print(i[0])
+            self.PostData(i[0], '1')
+            self.databaseRefresher()
+            time.sleep(1)
+            self.PostData(i[0], '0')
+            self.databaseRefresher()
+        current_Polling = 'OFF'
+
+    def current_calc(self, current, start_time, stop_time):
+        voltage = 230
+        current = 0.2
+        print(current, stop_time, start_time)
+        power = int(voltage*current)
+        elaps_time = (float(stop_time)-float(start_time))
+        energy = power*elaps_time
+        unit = energy/3600000
+        # print("unit is ", unit)
+        return unit
+    
+    # this function takes argument as sensor data and update the sensor data in raspberry pi local database
+    # this function is directly call in main function when board send sensor data to raspberry pi then the function calls 
+    # payload for sensor command [128,7,3,1,85,2,63,10,129] 
+    def update_sensor_values(self, data):
+        try:
+            mydb = mysql.connector.connect(
+                    host="localhost",
+                    user="root",
+                    passwd="icity_admin",
+                    database="datbase"
+                )
+        except:
+                print("data_base error")
+        # print(switchBoard,tempADC,lumADC)
+        try:
+            tempADC = data[1]*256+data[2]
+            lumADC = data[3]*256+data[4]
+            # call the function emp_ADC_calc to calculate ADC value then this function return degree
+            Degree = self.temp_ADC_calc(tempADC)
+            switchBoard = str(data[-2])
+            temperature = str(round(Degree, 1))
+            lux = str(lumADC)
+            # print("current temparatue is ", Degree)
+            # print("current Lux is", lumADC)
+            
+            # this query only update sensor values in raspberry pi local database not in server then make a new function to update sensor values
+            # and in this function we call a api to update sensor values in our database 
+            self.my=mydb.cursor()
+            sensor_update_query = "UPDATE flat_switch_data set temperature=%s,luminosity=%s where  swb_no_rpi=%s"
+            # exceuting query to sql
+            self.my.execute(sensor_update_query,(temperature, lumADC, switchBoard,))
+            self.mydb.commit()
+            
+            # call function to update sensor values in our server database its takes temperature value ,lux values as argument and update it to server
+            self.updateSensorValuesIntoDatabase(temperature,lux,switchBoard)
+
+            #RUN A THREAD FOR CALL FUNCTION TO UPDATE DATA IN SERVER
+        except:
+            print("sensor value not updating")
+    
+    # This function updates sensor (temperature and luminosity) in server database its takes temperature lux and switch board and 
+    # with help of switchboard its update sensor values in server database
+    
+    def updateSensorValuesIntoDatabase(self,temperature,luminosity,sw_board):
+        global UserSerialNo
+        timeout=3
+        socket.setdefaulttimeout(timeout)
+        maxm_try1=3
+        for i in range(maxm_try1):
+            url = "http://3.128.231.248/i-switch/automation/update_temp_lux.php?sl_no=" + UserSerialNo+ "&board_number="+sw_board+"&temperature="+temperature+"&lux="+luminosity
+            req=urllib.request.Request(url)
+            try:
+                with urllib.request.urlopen(req) as res:
+                    loc_data = res.read().decode("utf-8")
+                    print(loc_data)
+                break
+            except URLError as e:   
+                if hasattr(e, 'reason'):
+                    print('We failed to reach a server.')
+                    print('Reason: ', e.reason)
+                elif hasattr(e, 'code'):
+                    print('The server couldn\'t fulfill the request.')
+                    print('Error code: ', e.code)
+        # print("update sensor values in server")
+
+    # any wifi is added or any local ip is changed this function will be executed
+    def wifiConfiguration(self):
+        try:
+            mydb1 = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="icity_admin",
+                database="datbase"
+            )
+        except:
+            print("data_base error")
+
+        my = mydb1.cursor()
+        sql_system_info = "SELECT * FROM  system_infomation"
+        my.execute(sql_system_info)  # exceuting query to sql
+        sql_result = my.fetchall()
+
+        if (len(sql_result) != self.any_chages_sys_info['no_of_row']):
+            self.any_chages_sys_info['no_of_row'] = len(sql_result)
+            cofigObj = Flatconfigaration()
+            cofigObj.wifiConfig()
+            print("yes changes")
+        if (sql_result[0][-3] != self.any_chages_sys_info['local_ip']):
+
+            local_ip_update_query = "UPDATE system_infomation set  local_ip=%s"
+            self.my.execute(local_ip_update_query,
+                            (self.any_chages_sys_info['local_ip'],))
+            self.mydb.commit()
+            print("ip updated in local db")
+            maxm_try=3
+            for i in range(maxm_try):
+                url = "http://3.128.231.248/i-switch/automation/update_ip.php?sl_no=" + UserSerialNo+"&local_ip="+self.any_chages_sys_info['local_ip']
+                req = urllib.request.Request(url)
+                # timeout in seconds
+                timeout = 3
+                socket.setdefaulttimeout(timeout)
+                try:
+                    loc_rsp = urllib.request.urlopen(req)
+                    loc_data = loc_rsp.read().decode("utf-8")
+                    print(loc_data)
+                    break
+                except URLError as e:   
+                    if hasattr(e ,'reason'):
+                        print('We failed to reach a server.')
+                        print('Reason: ', e.reason)
+                    elif hasattr(e, 'code'):
+                        print('The server couldn\'t fulfill the request.')
+                        print('Error code: ', e.code)
+            
+    def pollingSecTime(self):
+        global old_network
+        # global mesh
+        print("mesh data",mesh)
+        print("old network",old_network)
+        
+        # meshUpdate_query = "UPDATE network set  mesh=%s"
+        # self.my.execute(meshUpdate_query, (str(mesh),))
+        # self.mydb.commit()
+        compare_dict={}
+        distValue=[]
+        for x in old_network:
+            for y in mesh:
+                if x == y:
+                    for k  in old_network[x]:
+                        if k not in mesh[y]:
+                            paths = list(nx.all_simple_paths(meshnetworkArry,
+                                                     MainSwitchBordNo, y, cutoff=3))
+                            paths.sort(key=len)
+                            # print(paths)
+                            for i in paths:
+                                pollingFlag=1
+                                i.reverse()
+                                send = i
+                                send.insert(0, 128), send.insert(
+                                    1, len(i)-1), send.insert(2, 2), send.insert(3, 1)
+                                print(send)
+                                break
+                            break
+                                
+                    distValue=[]
+        print(compare_dict)
+    
+    # this function is used to show user when board is alive or not here we compare the data and send response to user through database
+    def heartBeatOfSwitchboards(self,data):
+        print("heartbeat is coming please do operation using heartbeat")
+        pass
+    # This function is used for integration of wireless fire detector and store data in database and server
+    def wirelessFireDetector(self,data):
+        normal=0x01
+        fire=0x02
+        fault=0x03
+        # SEND SIGNALS TO HOOTER CONNECTED TO MAIN BOARD IF FIRE COMES
+        print("send signal to hooter")
+        # SAVE FIRE/FAULT/NORMAL STATUS IN DATABASE
+        # SEND NOTIFICATION TO MOBILE APP IF FIRE OR FAULT HAPPENS WITH THEIR LOCATION AND ADDRESS
+        pass
+    def regulationFromBoardSide(self,data):
+        try:
+            mydb1 = mysql.connector.connect(
+                host="localhost",
+                user="root",
+                passwd="icity_admin",
+                database="datbase"
+            )
+        except:
+            print("data_base error")
+        status=data[1]
+        switch_number=data[2]
+        switch_board=data[3]
+        my = mydb1.cursor()
+        query_for_id="SELECT id FROM flat_switch_data where switch_id=%s"
+        my.execute(query_for_id,(switch_number))  # exceuting query to sql
+        sql_result1 = my.fetchall()
+        id_of_switch=sql_result1[0][0]
+        update_status_speed= "UPDATE flat_switch_data SET status=%s,speed=%s WHERE id=%s"
+        my.execute(update_status_speed,(str(status),str(status),id_of_switch,))
+        mydb1.commit()
+
+
+
+meshTempEdgesArry = []
+secoundTimePoll = 0
+counter=2001
+# this is the starting point of the code where the compiler checks for __main__
+if __name__ == '__main__':
+    databuffer = ''
+    # the class iswitch contains switch_id, list of all the switches present and its status whether on or off, OFF time and ON time
+    # scheduling information of all switch, retrive user serial no,Local ip address got
+    obj = iswitch()
+    # obj.pollingSecTime()
+    # obj.current_polling()
+    # obj.VpnNotWorking()
+    print("global", mesh)
+    number_of_switchBoards=list(set(total_number_of_switchBoards))
+    print("number_of_total_switchBoards=",len(number_of_switchBoards),'\n',number_of_switchBoards)
+    # this is the main loop which gets continuously executed and waits for various inputs and outputs
+    while True:
+        try:
+            if True:
+                if mesh == {} and counter > 120:
+                    path = [128, 1, 2, 1, 2]
+                    ser.write(struct.pack('B'*len(path), *path))
+                    print("polling started")
+                    # pollingFlag=1
+                    counter=0
+                counter +=1
+                # save the switch configuration received from the APP to the database whenever there is change in the status of the switch.
+                # and based on the change in the status, commands will be sent to the corresponding switch board.
+                obj.databaseRefresher()
+                # # saving the change in IP or wifi username and password configuration. changes to the username and password will be done in the APP
+                # # change in IP also will have to informed through the mobile app.
+                obj.wifiConfiguration()
+                # retrieving the schedule timing configuration of the switch from the database to check if there is any changes
+                obj.DbRefresherScheduleSwitch()
+                # if there is any change in the time of schedule, this will ensure that the new timing is loaded.
+                schedule.run_pending()
+                # indication for testing of polling
+                if mesh != {} and len(mesh) < 3:
+                    # print("mesh",mesh)
+                    GPIO.output(18,GPIO.HIGH)
+                    obj.updateNetwort()
+                    GPIO.output(18,GPIO.LOW)
+                # HERE TOTAL NUMBER OF BOARDS FITTED IS COMPARED WITH TOTAL POLLED BOARDS IF THE TWO LISTS ARE NOT MATCHED THEN SEND NOTIFICATION TO MOBILE APP
+                    # print("number_of_polled_boards=",number_of_polled_boards)
+                    # if number_of_switchBoards != number_of_polled_boards :
+                    #     print("call function to missed board")
+                # if(len(mesh)==17):
+                #     pollingSecTime
+                # obj_now = datetime.datetime.now()
+                # print("Current second =", obj_now)
+                received_data = ''
+                # if len(mesh) == 11:
+                #     secoundTimePoll = 1
+                # if secoundTimePoll == 1:
+                #     print("2nd time polling testing")
+                #     obj.secTimePollingTesting()
+                if (ser.inWaiting() >= 1):
+                    while received_data != bytes([128]):
+                        received_data = ser.read()
+                        #print(received_data)
+                        break
+                    if received_data[0] == 128:
+                        GPIO.output(23,GPIO.HIGH)
+                        length = ser.read()
+                        # print("length=",length)
+                        data = list(ser.read(length[0]))
+                        # print("data=",data)
+                        # if data[0] == 64:
+                        #     print("main data recive", hex(
+                        #         data[0]), hex(data[1]), hex(data[2]))
+                        # this for if polled s witch board gives responce switch passing to store to array
+                        if len(data) > 2 and data[-1]==129:
+                            if data[0] == 2 and data[0] != 64 and data[-1] == 129 and mesh == {}:
+                                # print("main mesh data", hex(
+                                #     data[0]), hex(data[1]), hex(data[2]))
+                                # obj.mesh_network(
+                                #     pollingPath=path, serialdata=data)
+                                # pollingFlag=1
+                                meshShortestpath = dict(
+                                    nx.all_pairs_shortest_path(meshnetworkArry))
+                                #print("e=",e)
+                                #print("data=",data)
+                                if e.get(data[-2]) == None:
+                                    e[data[-2]] = data[1:-2]
+                                    for m in data[1:-2]:
+                                        meshTempEdgesArry.append((data[-2], m))
+                                    meshnetworkArry.add_edges_from(
+                                        meshTempEdgesArry)
+                                print("updated amar mesh topology ", e)
+                                mesh.update(e)
+                                # This query is used to update mesh in a table in gateway database
+                                # meshUpdate_query = "UPDATE network set  mesh=%s"
+                                # obj.my.execute(meshUpdate_query, (str(mesh),))
+                                # obj.mydb.commit()
+                                with open("mesh_network.json", "w+") as outfile:
+                                    json.dump(mesh, outfile)
+                            # if (data[0] == 5 or data[0] == 13 or data[0] == 14 or data[0] == 1 or data[0] == 3) and (data[1] != 4 and data[1] != 5) and pollingFlag==0:
+                            if (data[0] == 5  or data[0] == 1 or data[0] == 3 or data[0]==7 or data[0]==8) and (data[1] != 4 and data[1] != 5):
+                                print("main loop", data)
+                                if data[0] == 1 and data[-1]==129 and len(data)==4:
+                                    # this function when user press switch manualy it will ON or OFF the switch according to switch board
+                                    obj.switchBoard_side(data)
+                                # this function is to  when ever the PIR sensor is detected the this function is enable and it will take action according to switch is pressed
+                                if data[0] == 3 and data[-1]==129 and len(data)==7:
+                                    obj.update_sensor_values(data)
+                                #when pir is detect this function is called to turn on light and fan automatically by using temperature and luminosity data 
+                                if data[0] == 5 and data[1] == 1 and data[-1] == 129 and len(data)==4:
+                                    sw_Bord = str(data[-2])
+                                    for i in list_off_switch_boards:
+                                        if i.name == sw_Bord:
+                                            # print("canceling thread is", i.name)
+                                            i.cancel()
+                                            list_off_switch_boards.remove(i)
+                                    obj.automation(data)
+                                # this function is for checking for all the boards are alive or not every 5 minutes all boards sends heartbeat command to mainboard
+                                if data[0]==7 and data[1]==1 and data[-1]==129:
+                                    obj.heartBeatOfSwitchboards(data)
+                                # this function is used for wireless detector is implemented with iswitch and when fire comes its store fire data in database
+                                if data[0]==8:
+                                    obj.wirelessFireDetector(data)
+                                # this function is used when user press fan switch and heigh low its speed.
+                                # here 6 = regulation command
+                                if data[0] ==6 and len(data) == 5 and data[-1] ==129:
+                                    obj.regulationFromBoardSide(data)
+                            GPIO.output(23,GPIO.LOW)
+        except Exception as r:
+            print("r:",r)
+            print("unable to read data")
+            
