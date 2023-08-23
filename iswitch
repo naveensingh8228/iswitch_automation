@@ -696,18 +696,6 @@ class iswitch(feature):
             mydb1.commit()
         print("manual mode updated sucessfully")
 
-
-    # def temp_ADC_calc(self, ADC):
-    #     ADC_10_bit_val = ADC << 2
-    #     voltage = (ADC_10_bit_val * 5.0) / 1023  # voltage caluculation
-    #     volt_very = 2.5
-    #     Normal_room_temp = 25.0
-    #     value = voltage - volt_very
-    #     x = value / 0.05
-    #     Degree_celsius = Normal_room_temp + x
-    #     return Degree_celsius
-
-
     def temp_ADC_calc(self, ADC):
         # We are caluculating ADC - witch NTC thermister regestence value (currently we are use 10k regester connected to sensor  so 10000)
         NTC_Resistance = ((1023*10000/ADC) - 10000)
